@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// Damn Vulnerable DeFi v4 (https://damnvulnerabledefi.xyz)
 pragma solidity =0.8.25;
 
 import {ReentrancyGuard} from "solady/utils/ReentrancyGuard.sol";
@@ -9,13 +8,6 @@ import {SafeTransferLib, ERC4626, ERC20} from "solmate/tokens/ERC4626.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC3156FlashBorrower, IERC3156FlashLender} from "@openzeppelin/contracts/interfaces/IERC3156.sol";
 
-/**
- * FIXED VERSION - An ERC4626-compliant tokenized vault offering flashloans for a fee.
- * An owner can pause the contract and execute arbitrary changes.
- *
- * FIX: Uses internal accounting to track deposited assets instead of relying on token balance.
- * This prevents the attack where someone sends tokens directly to the vault.
- */
 contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, ERC4626, Pausable {
     using SafeTransferLib for ERC20;
     using FixedPointMathLib for uint256;
@@ -27,7 +19,6 @@ contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, E
 
     address public feeRecipient;
 
-    // FIX: Track internal accounting separately from token balance
     uint256 private _totalManagedAssets;
 
     error InvalidAmount(uint256 amount);
@@ -45,9 +36,6 @@ contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, E
         emit FeeRecipientUpdated(_feeRecipient);
     }
 
-    /**
-     * @inheritdoc IERC3156FlashLender
-     */
     function maxFlashLoan(address _token) public view nonReadReentrant returns (uint256) {
         if (address(asset) != _token) {
             return 0;
@@ -56,9 +44,6 @@ contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, E
         return totalAssets();
     }
 
-    /**
-     * @inheritdoc IERC3156FlashLender
-     */
     function flashFee(address _token, uint256 _amount) public view returns (uint256 fee) {
         if (address(asset) != _token) {
             revert UnsupportedCurrency();
@@ -71,34 +56,23 @@ contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, E
         }
     }
 
-    /**
-     * @inheritdoc ERC4626
-     * @dev FIX: Return internally tracked assets instead of actual balance
-     */
     function totalAssets() public view override nonReadReentrant returns (uint256) {
         return _totalManagedAssets;
     }
 
-    /**
-     * @inheritdoc IERC3156FlashLender
-     */
     function flashLoan(IERC3156FlashBorrower receiver, address _token, uint256 amount, bytes calldata data)
         external
         returns (bool)
     {
-        if (amount == 0) revert InvalidAmount(0); // fail early
-        if (address(asset) != _token) revert UnsupportedCurrency(); // enforce ERC3156 requirement
+        if (amount == 0) revert InvalidAmount(0);
+        if (address(asset) != _token) revert UnsupportedCurrency();
 
         uint256 balanceBefore = totalAssets();
 
-        // FIX: Proper invariant check - assets should match shares at 1:1 ratio initially
-        // Or we can remove this check entirely since internal accounting prevents manipulation
         if (convertToAssets(totalSupply) != balanceBefore) revert InvalidBalance();
 
-        // transfer tokens out + execute callback on receiver
         ERC20(_token).safeTransfer(address(receiver), amount);
 
-        // callback must return magic value, otherwise assume it failed
         uint256 fee = flashFee(_token, amount);
         if (
             receiver.onFlashLoan(msg.sender, address(asset), amount, fee, data)
@@ -107,29 +81,19 @@ contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, E
             revert CallbackFailed();
         }
 
-        // pull amount + fee from receiver, then pay the fee to the recipient
         ERC20(_token).safeTransferFrom(address(receiver), address(this), amount + fee);
         ERC20(_token).safeTransfer(feeRecipient, fee);
 
-        // FIX: Update internal accounting for the fee earned
         _totalManagedAssets += fee;
 
         return true;
     }
 
-    /**
-     * @inheritdoc ERC4626
-     */
     function beforeWithdraw(uint256 assets, uint256 shares) internal override nonReentrant {
-        // FIX: Decrease internal accounting when withdrawing
         _totalManagedAssets -= assets;
     }
 
-    /**
-     * @inheritdoc ERC4626
-     */
     function afterDeposit(uint256 assets, uint256 shares) internal override nonReentrant whenNotPaused {
-        // FIX: Increase internal accounting when depositing
         _totalManagedAssets += assets;
     }
 
@@ -140,13 +104,11 @@ contract UnstoppableVaultFixed is IERC3156FlashLender, ReentrancyGuard, Owned, E
         }
     }
 
-    // Allow owner to execute arbitrary changes when paused
     function execute(address target, bytes memory data) external onlyOwner whenPaused {
         (bool success,) = target.delegatecall(data);
         require(success);
     }
 
-    // Allow owner pausing/unpausing this contract
     function setPause(bool flag) external onlyOwner {
         if (flag) _pause();
         else _unpause();

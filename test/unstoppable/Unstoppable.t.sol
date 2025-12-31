@@ -91,8 +91,6 @@ contract UnstoppableChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_unstoppable() public checkSolvedByPlayer {
-        // Transfer tokens directly to the vault, bypassing the deposit mechanism
-        // This breaks the ERC4626 invariant that the vault expects
         token.transfer(address(vault), INITIAL_PLAYER_TOKEN_BALANCE);
     }
 
